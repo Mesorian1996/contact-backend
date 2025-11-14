@@ -46,7 +46,7 @@ app.post("/v1/contact", async (req, res) => {
     }
 
     // minimal required fields (default: email + message)
-    const required = site.requiredFields || ["email", "message"];
+    const required = site.requiredFields || ["email"];
     for (const f of required) {
       if (isEmpty(body[f])) return res.status(400).json({ error: `missing required field: ${f}` });
     }
@@ -65,7 +65,7 @@ app.post("/v1/contact", async (req, res) => {
       : keys;
 
     const rows = ordered.map((k) => `<p><strong>${esc(labels[k] || k)}:</strong> ${esc(String(body[k]))}</p>`);
-    const subject = `${site.subjectPrefix || "Kontakt"} Anfrage`.slice(0, 160);
+    const subject = (site.subject || `${site.subjectPrefix || "Kontakt"} Anfrage`).slice(0, 160);
     const html = `\n  <h2>${esc(subject)}</h2>\n  ${rows.join("\n")}\n`;
     const text = ordered.map((k) => `${labels[k] || k}: ${String(body[k])}`).join("\n");
     const recipients = Array.isArray(site.to) ? site.to : [site.to];
