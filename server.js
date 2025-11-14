@@ -15,16 +15,28 @@ app.use(express.json({ limit: "200kb" }));
 // ----- SMTP (GMX) -----
 // statt port 465 / secure:true
 const transporter = nodemailer.createTransport({
-  host: process.env.SMTP_HOST || "mail.gmx.net",   // evtl. "smtp.gmx.net" testen
+  host: process.env.SMTP_HOST || "mail.gmx.net", // alternativ "smtp.gmx.net"
   port: 587,
-  secure: false,            // WICHTIG: false bei 587 (STARTTLS)
+  secure: false,              // 587 = STARTTLS
+  requireTLS: true,
   auth: { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS },
-  requireTLS: true,         // zwingt STARTTLS
-  tls: { minVersion: "TLSv1.2", servername: "mail.gmx.net" },
-  connectionTimeout: 15000, // 15s
-  greetingTimeout: 10000,   // 10s
-  socketTimeout: 20000      // 20s
+
+  // Timeouts & Debug
+  connectionTimeout: 15000,
+  greetingTimeout: 10000,
+  socketTimeout: 20000,
+  logger: true,
+  debug: true,
+
+  // Verbindungsdetails
+  tls: {
+    minVersion: "TLSv1.2",
+    servername: "mail.gmx.net",
+    rejectUnauthorized: true
+  },
+  family: 4 // zwinge IPv4 (hilft, wenn IPv6-Routen zicken)
 });
+
 
 // ----- per-site config from ENV -----
 const SITES = JSON.parse(process.env.SITES_JSON || "{}");
