@@ -13,11 +13,17 @@ app.use(cors({ origin: true, methods: ["POST", "GET", "OPTIONS"] }));
 app.use(express.json({ limit: "200kb" }));
 
 // ----- SMTP (GMX) -----
+// statt port 465 / secure:true
 const transporter = nodemailer.createTransport({
-  host: process.env.SMTP_HOST,            // mail.gmx.net
-  port: Number(process.env.SMTP_PORT || 465),
-  secure: process.env.SMTP_SECURE !== "false", // true for 465
+  host: process.env.SMTP_HOST || "mail.gmx.net",   // evtl. "smtp.gmx.net" testen
+  port: 587,
+  secure: false,            // WICHTIG: false bei 587 (STARTTLS)
   auth: { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS },
+  requireTLS: true,         // zwingt STARTTLS
+  tls: { minVersion: "TLSv1.2", servername: "mail.gmx.net" },
+  connectionTimeout: 15000, // 15s
+  greetingTimeout: 10000,   // 10s
+  socketTimeout: 20000      // 20s
 });
 
 // ----- per-site config from ENV -----
