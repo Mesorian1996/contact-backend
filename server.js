@@ -1,4 +1,4 @@
-// server.js — Central Contact Backend (Render, GMX SMTP, no DB)
+// server.js — Central Contact Backend (Render, Brevo SMTP, no DB)
 import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
@@ -9,43 +9,56 @@ dotenv.config();
 // ----- app & middleware -----
 const app = express();
 const PORT = process.env.PORT || 3000;
-app.use(cors({ origin: true, methods: ["POST", "GET", "OPTIONS"] }));
+
+app.use(
+  cors({
+    origin: true, // Origin wird zurückgespiegelt, zusätzliche Prüfung machen wir in der Route
+    methods: ["POST", "GET", "OPTIONS"],
+  })
+);
+
 app.use(express.json({ limit: "200kb" }));
 
-// ----- SMTP (GMX) -----
-// statt port 465 / secure:true
+// ----- SMTP (Brevo) -----
 const transporter = nodemailer.createTransport({
-  host: process.env.SMTP_HOST || "mail.gmx.net", // alternativ "smtp.gmx.net"
-  port: 587,
-  secure: false,              // 587 = STARTTLS
-  requireTLS: true,
-  auth: { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS },
-
-  // Timeouts & Debug
-  connectionTimeout: 15000,
-  greetingTimeout: 10000,
-  socketTimeout: 20000,
-  logger: true,
-  debug: true,
-
-  // Verbindungsdetails
-  tls: {
-    minVersion: "TLSv1.2",
-    servername: "mail.gmx.net",
-    rejectUnauthorized: true
+  host: process.env.BREVO_SMTP_HOST, // z.B. smtp-relay.brevo.com
+  port: Number(process.env.BREVO_SMTP_PORT) || 587,
+  secure: false, // Port 587 = STARTTLS
+  auth: {
+    user: process.env.BREVO_SMTP_USER, // z.B. xxx@smtp-brevo.com
+    pass: process.env.BREVO_SMTP_PASS,
   },
-  family: 4 // zwinge IPv4 (hilft, wenn IPv6-Routen zicken)
 });
 
+// Optional: Test-Log beim Start
+transporter.verify((err, success) => {
+  if (err) {
+    console.error("❌ SMTP verify failed:", err.message);
+  } else {
+    console.log("✅ SMTP ready to send");
+  }
+});
 
 // ----- per-site config from ENV -----
 const SITES = JSON.parse(process.env.SITES_JSON || "{}");
 
 // ----- helpers -----
-const isEmail = (x) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(x || "").trim());
-const isEmpty = (v) => v == null || (typeof v === "string" && v.trim() === "");
+const isEmail = (x) =>
+  /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(x || "").trim());
+
+const isEmpty = (v) =>
+  v == null || (typeof v === "string" && v.trim() === "");
+
 const esc = (s = "") =>
-  String(s).replace(/[&<>\"']/g, (m) => ({ "&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;" }[m]));
+  String(s).replace(/[&<>\"']/g, (m) => {
+    return {
+      "&": "&amp;",
+      "<": "&lt;",
+      ">": "&gt;",
+      '"': "&quot;",
+      "'": "&#39;",
+    }[m];
+  });
 
 // ----- routes -----
 
@@ -54,44 +67,82 @@ app.post("/v1/contact", async (req, res) => {
   try {
     const body = req.body || {};
     const { siteId } = body;
-    if (!siteId || !SITES[siteId]) return res.status(400).json({ error: "unknown siteId" });
+
+    if (!siteId || !SITES[siteId]) {
+      return res.status(400).json({ error: "unknown siteId" });
+    }
+
     const site = SITES[siteId];
 
     // CORS allowlist by site
     const origin = req.headers.origin || "";
-    if (origin && Array.isArray(site.allowedOrigins) && !site.allowedOrigins.includes(origin)) {
+    if (
+      origin &&
+      Array.isArray(site.allowedOrigins) &&
+      !site.allowedOrigins.includes(origin)
+    ) {
       return res.status(403).json({ error: "origin not allowed" });
     }
 
-    // minimal required fields (default: email + message)
+    // minimal required fields (default: email)
     const required = site.requiredFields || ["email"];
     for (const f of required) {
-      if (isEmpty(body[f])) return res.status(400).json({ error: `missing required field: ${f}` });
+      if (isEmpty(body[f])) {
+        return res
+          .status(400)
+          .json({ error: `missing required field: ${f}` });
+      }
     }
-    if (!isEmail(body.email)) return res.status(400).json({ error: "invalid email" });
+
+    if (!isEmail(body.email)) {
+      return res.status(400).json({ error: "invalid email" });
+    }
 
     // build generic HTML from provided fields
-    const IGNORE = new Set(["siteId","consent","hp","captchaToken","meta"]);
+    const IGNORE = new Set(["siteId", "consent", "hp", "captchaToken", "meta"]);
     const labels = site.fieldLabels || {};
-    const order  = site.fieldOrder  || [];
+    const order = site.fieldOrder || [];
 
-    const keys = Object.keys(body).filter((k) => !IGNORE.has(k) && !isEmpty(body[k]));
-    const ordered = order.length
-      ? [...keys].sort((a,b) =>
-          (order.indexOf(a) === -1 ? 9999 : order.indexOf(a)) -
-          (order.indexOf(b) === -1 ? 9999 : order.indexOf(b)))
-      : keys;
+    const keys = Object.keys(body).filter(
+      (k) => !IGNORE.has(k) && !isEmpty(body[k])
+    );
 
-    const rows = ordered.map((k) => `<p><strong>${esc(labels[k] || k)}:</strong> ${esc(String(body[k]))}</p>`);
-    const subject = (site.subject || `${site.subjectPrefix || "Kontakt"} Anfrage`).slice(0, 160);
-    const html = `\n  <h2>${esc(subject)}</h2>\n  ${rows.join("\n")}\n`;
-    const text = ordered.map((k) => `${labels[k] || k}: ${String(body[k])}`).join("\n");
+    const ordered =
+      order.length > 0
+        ? [...keys].sort(
+            (a, b) =>
+              (order.indexOf(a) === -1 ? 9999 : order.indexOf(a)) -
+              (order.indexOf(b) === -1 ? 9999 : order.indexOf(b))
+          )
+        : keys;
+
+    const rows = ordered.map(
+      (k) =>
+        `<p><strong>${esc(labels[k] || k)}:</strong> ${esc(
+          String(body[k])
+        )}</p>`
+    );
+
+    const subject = (
+      site.subject || `${site.subjectPrefix || "Kontakt"} Anfrage`
+    ).slice(0, 160);
+
+    const html = `
+      <h2>${esc(subject)}</h2>
+      ${rows.join("\n")}
+    `;
+
+    const text = ordered
+      .map((k) => `${labels[k] || k}: ${String(body[k])}`)
+      .join("\n");
+
     const recipients = Array.isArray(site.to) ? site.to : [site.to];
 
+    // ✅ Hier wird jetzt die Mail verschickt
     await transporter.sendMail({
-      from: site.from,          // e.g. "Limani Kontakt <mes.webprojekt@gmx.de>"
+      from: site.from, // z.B. "Limani Kontakt <kontakt@limani-fliesenleger.de>"
       to: recipients,
-      replyTo: body.email,      // replies to user
+      replyTo: body.email, // Antworten direkt an den User
       subject,
       html,
       text,
@@ -108,4 +159,6 @@ app.post("/v1/contact", async (req, res) => {
 app.get("/health", (_req, res) => res.json({ ok: true }));
 
 // start
-app.listen(PORT, () => console.log(`✅ Email service listening on :${PORT}`));
+app.listen(PORT, () => {
+  console.log(`✅ Email service listening on :${PORT}`);
+});
