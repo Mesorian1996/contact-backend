@@ -1,46 +1,50 @@
-// server.js — Central Contact Backend (Render, Brevo SMTP, no DB)
+// server.js — Central Contact Backend (Render, Brevo HTTP API, no DB)
 import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
-import nodemailer from "nodemailer";
+import SibApiV3Sdk from "@getbrevo/brevo";
 
 dotenv.config();
 
 // ----- app & middleware -----
 const app = express();
-const PORT = process.env.PORT || 3000;
+// Render erkennt den Port über die ENV-Variable PORT
+const PORT = process.env.PORT || 10000;
 
 app.use(
   cors({
-    origin: true, // Origin wird zurückgespiegelt, zusätzliche Prüfung machen wir in der Route
+    origin: true, // wir spiegeln Origin zurück, prüfen aber zusätzlich pro Site
     methods: ["POST", "GET", "OPTIONS"],
   })
 );
 
 app.use(express.json({ limit: "200kb" }));
 
-// ----- SMTP (Brevo) -----
-const transporter = nodemailer.createTransport({
-  host: process.env.BREVO_SMTP_HOST, // z.B. smtp-relay.brevo.com
-  port: Number(process.env.BREVO_SMTP_PORT) || 587,
-  secure: false, // Port 587 = STARTTLS
-  auth: {
-    user: process.env.BREVO_SMTP_USER, // z.B. xxx@smtp-brevo.com
-    pass: process.env.BREVO_SMTP_PASS,
-  },
-});
+// ----- Brevo API-Client -----
+const client = SibApiV3Sdk.ApiClient.instance;
+client.authentications["api-key"].apiKey = process.env.BREVO_API_KEY;
 
-// Optional: Test-Log beim Start
-transporter.verify((err, success) => {
-  if (err) {
-    console.error("❌ SMTP verify failed:", err.message);
-  } else {
-    console.log("✅ SMTP ready to send");
-  }
-});
+const emailApi = new SibApiV3Sdk.TransactionalEmailsApi();
+
+// Kleiner Helper, um "Name <mail@domain>" zu splitten
+function parseFrom(fromStr) {
+  if (!fromStr) return { name: "Kontakt", email: "no-reply@example.com" };
+  const m = fromStr.match(/^(.*)<(.+@.+)>$/);
+  if (!m) return { name: fromStr, email: fromStr };
+  return {
+    name: m[1].trim().replace(/(^"|"$)/g, ""),
+    email: m[2].trim(),
+  };
+}
 
 // ----- per-site config from ENV -----
-const SITES = JSON.parse(process.env.SITES_JSON || "{}");
+let SITES = {};
+try {
+  SITES = JSON.parse(process.env.SITES_JSON || "{}");
+} catch (e) {
+  console.error("❌ Failed to parse SITES_JSON:", e.message);
+  SITES = {};
+}
 
 // ----- helpers -----
 const isEmail = (x) =>
@@ -98,7 +102,7 @@ app.post("/v1/contact", async (req, res) => {
       return res.status(400).json({ error: "invalid email" });
     }
 
-    // build generic HTML from provided fields
+    // build generic HTML/TEXT from provided fields
     const IGNORE = new Set(["siteId", "consent", "hp", "captchaToken", "meta"]);
     const labels = site.fieldLabels || {};
     const order = site.fieldOrder || [];
@@ -137,20 +141,25 @@ app.post("/v1/contact", async (req, res) => {
       .join("\n");
 
     const recipients = Array.isArray(site.to) ? site.to : [site.to];
+    const sender = parseFrom(site.from);
 
-    // ✅ Hier wird jetzt die Mail verschickt
-    await transporter.sendMail({
-      from: site.from, // z.B. "Limani Kontakt <kontakt@limani-fliesenleger.de>"
-      to: recipients,
-      replyTo: body.email, // Antworten direkt an den User
+    const sendSmtpEmail = {
+      sender,
+      to: recipients.map((email) => ({ email })),
+      replyTo: body.email ? { email: body.email } : undefined,
       subject,
-      html,
-      text,
-    });
+      htmlContent: html,
+      textContent: text,
+    };
+
+    await emailApi.sendTransacEmail(sendSmtpEmail);
 
     return res.status(200).json({ ok: true });
   } catch (err) {
-    console.error("contact error:", err);
+    console.error(
+      "contact error:",
+      err.response?.body || err.message || err
+    );
     return res.status(500).json({ error: "Internal error" });
   }
 });
