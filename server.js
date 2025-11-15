@@ -2,7 +2,7 @@
 import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
-import SibApiV3Sdk from "@getbrevo/brevo";
+import { TransactionalEmailsApi, SendSmtpEmail } from "@getbrevo/brevo";
 
 dotenv.config();
 
@@ -21,10 +21,8 @@ app.use(
 app.use(express.json({ limit: "200kb" }));
 
 // ----- Brevo API-Client -----
-const client = SibApiV3Sdk.ApiClient.instance;
-client.authentications["api-key"].apiKey = process.env.BREVO_API_KEY;
-
-const emailApi = new SibApiV3Sdk.TransactionalEmailsApi();
+const emailApi = new TransactionalEmailsApi();
+emailApi.authentications.apiKey.apiKey = process.env.BREVO_API_KEY;
 
 // Kleiner Helper, um "Name <mail@domain>" zu splitten
 function parseFrom(fromStr) {
@@ -143,16 +141,15 @@ app.post("/v1/contact", async (req, res) => {
     const recipients = Array.isArray(site.to) ? site.to : [site.to];
     const sender = parseFrom(site.from);
 
-    const sendSmtpEmail = {
-      sender,
-      to: recipients.map((email) => ({ email })),
-      replyTo: body.email ? { email: body.email } : undefined,
-      subject,
-      htmlContent: html,
-      textContent: text,
-    };
-
-    await emailApi.sendTransacEmail(sendSmtpEmail);
+    const sendSmtpEmail = new SendSmtpEmail();
+    sendSmtpEmail.sender = sender;
+    sendSmtpEmail.to = recipients.map((email) => ({ email }));
+    sendSmtpEmail.replyTo = body.email ? { email: body.email } : undefined;
+    sendSmtpEmail.subject = subject;
+    sendSmtpEmail.htmlContent = html;
+    sendSmtpEmail.textContent = text;
+    
+    await emailApi.sendTransacEmail(sendSmtpEmail);    
 
     return res.status(200).json({ ok: true });
   } catch (err) {
